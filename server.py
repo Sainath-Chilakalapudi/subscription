@@ -1,16 +1,18 @@
-import http.server
-import threading
-from utils.config import Config  # Import the Config class
+from flask import Flask
+import os
+from threading import Thread
 
-def start_server():
-    PORT = int(Config.PORT)  # Convert the port value to an integer
-    server = http.server.HTTPServer(('0.0.0.0', PORT), http.server.SimpleHTTPRequestHandler)
-    server.serve_forever()
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Telegram Bot is Running!"
 
 def run_server():
-    thread = threading.Thread(target=start_server)
-    thread.daemon = True  # So that the server dies when the main thread dies
-    thread.start()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
-if __name__ == "__main__":
-    run_server()
+def keep_alive():
+    server = Thread(target=run_server)
+    server.daemon = True  # This ensures the thread will be killed when main program exits
+    server.start()
