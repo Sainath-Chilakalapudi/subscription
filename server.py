@@ -1,10 +1,9 @@
 import http.server
 import threading
-
-PORT = 8080  # You can choose any available port
+from utils.config import Config
 
 def start_server():
-    server = http.server.HTTPServer(('0.0.0.0', PORT), http.server.SimpleHTTPRequestHandler)
+    server = http.server.HTTPServer(('0.0.0.0', Config.PORT), http.server.SimpleHTTPRequestHandler)
     server.serve_forever()
 
 def run_server():
