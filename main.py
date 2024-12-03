@@ -1,4 +1,5 @@
 # from server import run_server
+from server import keep_alive
 from bot.bot_instance import get_bot_instance
 from db.connection import Base, engine
 from helpers.scheduler import start_scheduler
@@ -8,6 +9,7 @@ from pyrogram import idle
 
 async def main():
     # run_server()  # Start the dummy server
+    keep_alive()
     parser = argparse.ArgumentParser(description="Start the bot.")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
