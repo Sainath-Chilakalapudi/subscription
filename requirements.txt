@@ -7,4 +7,5 @@ Unidecode == 1.2.0
 psycopg2 == 2.9.10
 TgCrypto == 1.2.5
 Flask
+requests
 # aiohttp
