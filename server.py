@@ -1,17 +1,16 @@
-from aiohttp import web
-import asyncio
+import http.server
+import threading
 
-async def handle_health_check(request):
-    return web.Response(text="Bot is running!", status=200)
+PORT = 8080  # You can choose any available port
 
-async def start_server(port):
-    app = web.Application()
-    app.router.add_get("/", handle_health_check)
-    app.router.add_get("/health", handle_health_check)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"Dummy server started on port {port}")
-    return runner
+def start_server():
+    server = http.server.HTTPServer(('0.0.0.0', PORT), http.server.SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+def run_server():
+    thread = threading.Thread(target=start_server)
+    thread.daemon = True  # So that the server dies when the main thread dies
+    thread.start()
+
+if __name__ == "__main__":
+    run_server()
