@@ -1,9 +1,10 @@
 import http.server
 import threading
-from utils.config import Config
+from utils.config import Config  # Import the Config class
 
 def start_server():
-    server = http.server.HTTPServer(('0.0.0.0', Config.PORT), http.server.SimpleHTTPRequestHandler)
+    PORT = int(Config.PORT)  # Convert the port value to an integer
+    server = http.server.HTTPServer(('0.0.0.0', PORT), http.server.SimpleHTTPRequestHandler)
     server.serve_forever()
 
 def run_server():
