@@ -2,8 +2,9 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy import select, delete, func
 from datetime import datetime, timedelta
-from db.models import User, Subscription, Channel
+from db.models import User, AdminChannel, Subscription, Channel
 from db.user_helpers import delete_user_from_channel, get_user_mention
+from db.admin_helpers import is_channel_admin
 from helpers.additional_bot_to_db_helper import kick_and_unban_user
 from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant, PeerIdInvalid, UserBannedInChannel
 from db.channel_helpers import get_channel_mention
@@ -18,23 +19,34 @@ def is_valid_date(date_str: str) -> bool:
     except ValueError:
         return False
 
-def add_subscription(session: Session, user_id: int, channel_id: int, days: int = 30):
+def add_subscription(session: Session, user_id: int, channel_id: int, admin_id: int, days: int = 30):
+    """Add subscription with admin verification"""
     try:
-        # Check if a subscription already exists for the user and channel.
+        # Verify admin has rights to this channel
+        if not is_channel_admin(session, admin_id, channel_id):
+            raise ValueError(f"Admin {admin_id} does not have rights to this channel {channel_id}")
+
         subscription = (
             session.query(Subscription)
-            .filter(Subscription.user_id == user_id, Subscription.channel_id == channel_id)
+            .filter(Subscription.user_id == user_id, 
+                   Subscription.channel_id == channel_id)
             .first()
         )
+        
         if not subscription:
             expiry_date = datetime.now().date() + timedelta(days=days)
-            subscription = Subscription(user_id=user_id, channel_id=channel_id, expiry_date=expiry_date)
+            subscription = Subscription(
+                user_id=user_id, 
+                channel_id=channel_id, 
+                expiry_date=expiry_date
+            )
             session.add(subscription)
             session.commit()
-            LOGGER.info(f"Successfully added subscription for user {user_id} to channel {channel_id}")
+            LOGGER.info(f"Admin {admin_id} added subscription for user {user_id} to channel {channel_id}")
         return subscription
     except Exception as e:
-        LOGGER.error(f"Unable to add/retrieve subscription: {e}")
+        session.rollback()
+        LOGGER.error(f"Error adding subscription: {e}")
         return None
 
 def get_subscriptions(session: Session, channel_id: int):
@@ -165,7 +177,7 @@ def get_subscriptions(session: Session, channel_id: int):
 
 #     return f"Subscription for user {get_user_mention(session,user_id)} in channel {get_channel_mention(session,channel_id)} updated to expire on {new_expiry}."
 
-async def update_subscription(session: Session, user_id: int, channel_id: int, duration_text: str):
+async def update_subscription(session: Session, user_id: int, channel_id: int, admin_id: int, duration_text: str):
     """
     Update the subscription duration for a given user and channel.
 
@@ -193,7 +205,10 @@ async def update_subscription(session: Session, user_id: int, channel_id: int, d
     """
     try:
         LOGGER.info(f"update subscription for {user_id} - {channel_id} - {duration_text}")
-        
+        # Verify admin has rights to this channel
+        if not is_channel_admin(session, admin_id, channel_id):
+            raise ValueError(f"Admin {admin_id} does not have rights to this channel {channel_id}")
+
         # Fetch the subscription or create a new one if not found
         subscription = (
             session.query(Subscription)
@@ -243,10 +258,18 @@ async def handle_kick_action(session, user_id: int, channel_id: int) -> str:
         await kick_and_unban_user(user_id, channel_id)
     except ChatAdminRequired as e:
         LOGGER.warning(f"Caught ChatAdminRequired exception: {e}")
-        raise ChatAdminRequired(e)
-    except PeerIdInvalid as e:
+        return ("⚠️ **Warning**: The bot needs admin privileges on {channel_mention} to perform this action.\n\n"
+        "**What to do?**\n"
+        "1. Make sure the bot is added as an admin to the channel or group.\n"
+        "2. Grant the bot the necessary admin permissions (e.g., posting messages, managing users, etc.).\n"
+        "3. Try again after the bot is properly set up as an admin.")
+    except (ValueError, PeerIdInvalid) as e:
         LOGGER.warning(f"Caught PeerIdInvalid exception: {e}")
-        raise PeerIdInvalid(e)
+        return (f"⚠️ **Warning**: It looks like you need to interact with the channel {channel_mention} first before you can proceed.\n\n"
+                "**What to do?**\n"
+                "1. Visit the channel.\n"
+                "2. Quick React to any random message in the channel.\n"
+                "3. Try again – the bot needs this interaction to reconnect properly.")
     except Exception as e:
         LOGGER.warning(f"Caught generic exception: {e}")
         return str(e)
@@ -275,21 +298,22 @@ def calculate_new_expiry(current_expiry: datetime, unit: str, value: int) -> dat
     """Calculate the new expiry date based on unit and value."""
     LOGGER.info(f"Entering calculate_new_expiry with current_expiry={current_expiry}, unit={unit}, value={value}")
 
-    unit_to_delta_kwargs = {
-        'd': 'days',
-        'w': 'weeks',
-        'm': 'months',  # Crucial change: Use 'months' for months
-        'y': 'years'
+    # Map units to their respective multipliers in days
+    unit_to_days = {
+        'd': 1,          # days
+        'w': 7,          # weeks
+        'm': 30,         # months (approx)
+        'y': 365         # years (approx)
     }
 
-    if unit in unit_to_delta_kwargs:
+    # Check if the unit is valid and calculate the new expiry
+    if unit in unit_to_days:
         try:
-            new_expiry = current_expiry + timedelta(**{unit_to_delta_kwargs[unit]: value})
+            new_expiry = current_expiry + timedelta(days=value * unit_to_days[unit])
             LOGGER.info(f"Exiting calculate_new_expiry with new_expiry={new_expiry}")
             return new_expiry
-        except TypeError as e:
-            LOGGER.error(f"Error calculating new expiry: {e}")
-            return current_expiry  # Return the original expiry if error occurs       
+        except Exception as e:
+            LOGGER.error(f"Error calculating new expiry: {e}")  
 
     LOGGER.warning(f"Exiting calculate_new_expiry with no changes to expiry (invalid unit)")
     return current_expiry
@@ -339,7 +363,7 @@ def parse_duration(duration_text: str) -> tuple:
 
 
 # Fetch expired subscriptions
-def fetch_expired_subscriptions(session: Session):
+def fetch_expired_subscriptions(session: Session, admin_id: int = None):
     """
     Fetches expired subscriptions and returns tuples containing all necessary data.
     
@@ -363,6 +387,14 @@ def fetch_expired_subscriptions(session: Session):
         .where(Subscription.expiry_date <= today)
     )
     
+    if admin_id:
+        # Add a subquery to filter by admin's channels
+        admin_channels_subquery = (
+            select(AdminChannel.channel_id)
+            .where(AdminChannel.admin_id == admin_id)
+        )
+        query = query.where(Subscription.channel_id.in_(admin_channels_subquery))
+
     results = session.execute(query).all()
     return [
         {
@@ -376,7 +408,7 @@ def fetch_expired_subscriptions(session: Session):
     ]
 
 # Fetches subscriptions that are about to expire within the next 3 days.
-def fetch_soon_to_expire_subscriptions(session: Session):
+def fetch_soon_to_expire_subscriptions(session: Session, admin_id: int = None):
     """
     Fetches subscriptions that are expiring within the next 3 days,
     along with associated user and channel information as objects.
@@ -399,7 +431,27 @@ def fetch_soon_to_expire_subscriptions(session: Session):
         )
     )
 
+    if admin_id:
+        # Add a subquery to filter by admin's channels
+        admin_channels_subquery = (
+            select(AdminChannel.channel_id)
+            .where(AdminChannel.admin_id == admin_id)
+        )
+        query = query.where(Subscription.channel_id.in_(admin_channels_subquery))
+
     results = session.execute(query).scalars().all()
+
+    if results:
+        count = len(results)
+        LOGGER.info(f"Found {count} soon-expiring subscriptions:")
+        if count > 1:
+            LOGGER.info("Multiple subscriptions expiring soon.")  # Log if more than one
+        for subscription in results:  #Detailed logs to avoid clutter
+          LOGGER.debug(f"Subscription: {subscription!r}, User: {subscription.user!r}, Channel: {subscription.channel!r}") #using repr to get str representation.
+
+    else:
+        LOGGER.info("No soon-expiring subscriptions found.")
+
     return results
 """ Usage =>
 f"User ID: {sub.user.user_id}, Full Name: {sub.user.fullname}, "
@@ -410,14 +462,37 @@ f"User ID: {sub.user.user_id}, Full Name: {sub.user.fullname}, "
 
 
 # Remove expired subscriptions
-def remove_expired_subscriptions(session: Session):
+def remove_expired_subscriptions(session: Session, admin_id: int = None):
+    """
+    Removes expired subscriptions and optionally cleans up users with no active subscriptions.
+    If an admin_id is provided, only remove expired subscriptions for channels
+    associated with that admin.
+    
+    Args:
+        session (Session): The database session
+        admin_id (int, optional): The admin ID to filter by (optional)
+        
+    Returns:
+        List[int]: List of user IDs whose subscriptions were removed
+    """
     today = datetime.now().date()
-    query = delete(Subscription).where(Subscription.expiry_date <= today).returning(Subscription.user_id)
-    expired_users = session.execute(query).scalars().all()
+    query = delete(Subscription).where(Subscription.expiry_date <= today)
 
-    # Clean up users with no active subscriptions
-    session.execute(
-        delete(User).where(~User.subscriptions.any())
-    )
+    if admin_id:
+        # Add a subquery to filter by admin's channels
+        admin_channels_subquery = (
+            select(AdminChannel.channel_id)
+            .where(AdminChannel.admin_id == admin_id)
+        )
+        query = query.where(Subscription.channel_id.in_(admin_channels_subquery))
+
+    expired_users = session.execute(query.returning(Subscription.user_id)).scalars().all()
+
+    # Clean up users with no active subscriptions (only if no admin_id is provided)
+    if not admin_id:
+        session.execute(
+            delete(User).where(~User.subscriptions.any())
+        )
+
     session.commit()
     return expired_users
